@@ -1,12 +1,15 @@
-# Builds mvtools.dll from source (third_party/mvtools) and, on a v* tag, attaches it to the
-# GitHub release so install.ps1 can download it. Building in CI keeps the binary traceable
+# Builds mvtools.dll from source (third_party/mvtools) and, when a release is published,
+# attaches it to that release so install.ps1 can download it. Building in CI keeps the binary traceable
 # to public source plus the patches in this repo (MVTools is GPL-2.0).
 name: mvtools
 
 on:
+  # Two separate filters: with `tags` alone, branch pushes would never trigger.
   push:
+    branches: ['main']
     paths: ['third_party/mvtools/**', '.github/workflows/mvtools.yml']
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -43,7 +46,7 @@ jobs:
           name: mvtools-dll
           path: dist/mvtools.dll
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/mvtools.dll
