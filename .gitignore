@@ -1,0 +1,7 @@
+out/
+dist/
+*.log
+adaptive-cache.json
+ytdl-adaptive.json
+rife_target_*.txt
+mv_target_*.txt

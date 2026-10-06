@@ -1,0 +1,49 @@
+# Builds mvtools.dll from source (third_party/mvtools) and, on a v* tag, attaches it to the
+# GitHub release so install.ps1 can download it. Building in CI keeps the binary traceable
+# to public source plus the patches in this repo (MVTools is GPL-2.0).
+name: mvtools
+
+on:
+  push:
+    paths: ['third_party/mvtools/**', '.github/workflows/mvtools.yml']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-fftw
+      - name: Build
+        run: ./third_party/mvtools/build-mvtools.sh dist
+      - name: Check the DLL is self-contained
+        run: |
+          deps=$(objdump -p dist/mvtools.dll | grep 'DLL Name' | grep -viE 'KERNEL32|msvcrt' || true)
+          if [ -n "$deps" ]; then echo "unexpected imports: $deps"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mvtools-dll
+          path: dist/mvtools.dll
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/mvtools.dll
