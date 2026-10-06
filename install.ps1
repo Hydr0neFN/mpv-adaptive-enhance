@@ -63,6 +63,13 @@ function Update-SessionPath {
                 [Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
+function Invoke-Native([scriptblock]$cmd) {
+    # Run a native command with stderr discarded. Under Windows PowerShell 5.1 with
+    # ErrorActionPreference=Stop, "2>$null" alone still turns stderr into a terminating error.
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { & $cmd 2>$null } finally { $ErrorActionPreference = $old }
+}
+
 function Get-File($url, $dest) {
     for ($i = 1; $i -le 3; $i++) {
         try { Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing; return }
@@ -71,7 +78,7 @@ function Get-File($url, $dest) {
 }
 
 function Install-Winget($id, $name, [string]$override) {
-    $listed = winget list --id $id --exact --accept-source-agreements 2>$null | Select-String -SimpleMatch $id
+    $listed = Invoke-Native { winget list --id $id --exact --accept-source-agreements } | Select-String -SimpleMatch $id
     if ($listed) { Ok "$name already installed"; return }
     Write-Host "    installing $name ..."
     $wargs = @('install', '--id', $id, '--exact', '--silent', '--scope', 'user',
@@ -91,7 +98,7 @@ function Find-Python {
     # 3.12+ via the py launcher, else a per-user python.org install, else python.exe on PATH
     if (Get-Command py -ErrorAction SilentlyContinue) {
         foreach ($v in '3.13', '3.12', '3.14') {
-            $exe = & py "-$v" -c 'import sys; print(sys.executable)' 2>$null
+            $exe = Invoke-Native { & py "-$v" -c 'import sys; print(sys.executable)' }
             if ($LASTEXITCODE -eq 0 -and $exe) { return $exe.Trim() }
         }
     }
@@ -100,7 +107,7 @@ function Find-Python {
     $cands += @(Get-Command python.exe -All -ErrorAction SilentlyContinue | ForEach-Object Source |
                 Where-Object { $_ -notmatch 'WindowsApps' })   # skip the Store alias stub
     foreach ($exe in $cands) {
-        $ok = & $exe -c 'import sys; print(sys.version_info >= (3, 12))' 2>$null
+        $ok = Invoke-Native { & $exe -c 'import sys; print(sys.version_info >= (3, 12))' }
         if ($ok -eq 'True') { return $exe }
     }
     return $null
