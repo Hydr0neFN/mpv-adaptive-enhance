@@ -119,7 +119,7 @@ Set in `%APPDATA%\mpv\mpv.conf`, e.g. `script-opts-append=adaptive_enhance-mv=of
 | `adaptive_enhance-mv` | `auto`, `off` | `auto` |
 | `adaptive_enhance-rife` | `off`, `auto`, `on` | `off` |
 | `adaptive_enhance-content` | `auto`, `anime`, `live`, `grainy` | `auto` |
-| `adaptive_enhance-defer_steps` | `no`, `yes` (apply step-downs only at the next pause or seek; for mpv driven by a device player) | `no` |
+| `adaptive_enhance-resync_seek` | `no`, `yes` (after a mid-playback step-down, issue a zero-length exact seek 1.5 s later; for mpv driven by a device player that resyncs only on seek) | `no` |
 | `ytdl_adaptive-reload` | `yes`, `no` (no mid-playback resolution changes) | `yes` |
 | `ytdl_adaptive-fallback_clients` | YouTube clients joined with `+` | `web_embedded+tv+mweb` |
 
@@ -129,7 +129,7 @@ Set in `%APPDATA%\mpv\mpv.conf`, e.g. `script-opts-append=adaptive_enhance-mv=of
 |---|---|
 | mpv closes ~3 s after opening a video, no error | The VapourSynth folder is not on PATH yet. Sign out and back in; if it persists, re-run the installer. |
 | mpv.net freezes at "vapoursynth initializing" | The RIFE plugin hangs inside mpv.net. The installer keeps RIFE off there; use `mpv.exe` (the shortcut does) if you want RIFE. |
-| mpv driven by another app (e.g. a funscript/device player) drifts out of sync | Turn interpolation off for that mpv instance only: add `script-opts-append=adaptive_enhance-mv=off` and `script-opts-append=adaptive_enhance-rife=off` to its `mpv.conf`. Also add `script-opts-append=adaptive_enhance-defer_steps=yes` so step-downs wait for the next pause or seek. Shaders do not affect timing and can stay on. |
+| mpv driven by another app (e.g. a funscript/device player) drifts out of sync | Turn interpolation off for that mpv instance only: add `script-opts-append=adaptive_enhance-mv=off` and `script-opts-append=adaptive_enhance-rife=off` to its `mpv.conf`. Also add `script-opts-append=adaptive_enhance-resync_seek=yes` so the player is resynced with a seek after each step-down. Shaders do not affect timing and can stay on. |
 | YouTube: HTTP 403 or "no video formats" | yt-dlp is out of date: `winget upgrade yt-dlp.yt-dlp`. |
 | Stutter for the first seconds of a file | Expected while the ladder settles (15–40 s for a new kind of video). |
 | Picture looks the same as before | Press `` ` ``: at 1:1 scale on a sharp source there is little to improve. Compare with `Ctrl+s`. |
