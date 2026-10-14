@@ -95,7 +95,11 @@ local function rank_of(name)
     return 100 + t * 2 + (kind == "full" and 1 or 0)
 end
 
--- script-opts: adaptive_enhance-rife=auto|on|off, adaptive_enhance-content=auto|anime|live|grainy
+-- script-opts: adaptive_enhance-rife=auto|on|off, adaptive_enhance-content=auto|anime|live|grainy,
+-- adaptive_enhance-defer_steps=yes (default no): do not step down mid-playback; remember the
+-- failure at once but apply the step at the next pause or seek, where an app that drives a
+-- device from mpv's time-pos resyncs anyway (a mid-playback shader/vf switch is a visible
+-- hitch, and the catch-up seek would knock such an app out of sync).
 -- (set rife=off for an mpv instance driven by another app: a VapourSynth spin-up mid-file
 -- is a 1.5 s hitch)
 -- RIFE defaults to OFF (2026-10-06): a rapid-seek test with RIFE active ended in a GPU
@@ -103,7 +107,7 @@ end
 -- from the Tab menu / Ctrl+r, or permanently with adaptive_enhance-rife=auto.
 -- mv = MVTools motion interpolation (cheap, CPU block matching), ON by default since
 -- 2026-10-07; RIFE (neural, GPU, much heavier) stays opt-in and ranks above it when on.
-local opts = { rife = "off", content = "auto", mv = "auto" }
+local opts = { rife = "off", content = "auto", mv = "auto", defer_steps = false }
 require("mp.options").read_options(opts, "adaptive_enhance")
 local rife_mode = (opts.rife == "on" or opts.rife == "auto") and opts.rife or "off"   -- auto | on | off   (session-wide, Ctrl+r / Tab menu)
 local mv_mode = (opts.mv == "off") and "off" or "auto"   -- auto | off (Tab menu)
@@ -148,12 +152,13 @@ local function publish()
     local r = st.ladder and st.ladder[st.level]
     local s = string.format(
         "enhance: %s%s [%s]  rung %d/%d  scale %.2f (%s)  content %s\n" ..
-        "MV %s%s  RIFE %s%s  last window: drop %.1f/s delayed %.1f/s vf %.1ffps\n" ..
+        "MV %s%s  RIFE %s%s  last window: drop %.1f/s delayed %.1f/s vf %.1ffps%s\n" ..
         "key %s  learned fail: %s",
         r and r.name or "?", st.manual and " (MANUAL)" or "", r and short(r.shaders) or "",
         st.level or 0, st.ladder and #st.ladder or 0, st.scale or 0, st.class or "?",
         st.content, mv_mode, st.mv_note or "", rife_mode, st.rife_note or "",
         st.last_drop or 0, st.last_delay or 0, st.last_vf or 0,
+        st.pending and ("  pending step-down at next pause/seek: " .. st.pending) or "",
         st.key or "?", st.bad_name or "-")
     mp.set_property_native("user-data/adaptive/status", s)
 end
@@ -316,6 +321,7 @@ local function apply(level, why)
     end
     st.warm_until = mp.get_time() + warm
     st.bad_count, st.win, st.ok_count = 0, nil, 0
+    st.pending = nil    -- any rung change makes a deferred step-down obsolete
     msg.info(string.format("rung %d %s (%s) %s", level, r.name, short(r.shaders), why or ""))
     publish()
 end
@@ -356,6 +362,17 @@ local function try_init()
     setup("start")
 end
 
+-- remember: this rung (and anything heavier) fails for this key
+local function remember_failure(r, reason)
+    local cache = cache_load()
+    local e = cache[st.key]
+    if not e or rank_of(e.bad) > rank_of(r.name) then
+        cache[st.key] = { bad = r.name, t = os.time(), why = reason }
+        cache_save(cache)
+        st.bad_name = r.name
+    end
+end
+
 local function step_down(reason)
     local r = st.ladder[st.level]
     if st.level >= #st.ladder then return end
@@ -364,14 +381,7 @@ local function step_down(reason)
     if r.rife and (r.name:match("chroma$") or reason:match("^playing") or reason:match("^RIFE")) then
         set_rife_budget(math.min(rife_budget(), out_rate * 0.95), "fail " .. reason)
     end
-    -- remember: this rung (and anything heavier) fails for this key
-    local cache = cache_load()
-    local e = cache[st.key]
-    if not e or rank_of(e.bad) > rank_of(r.name) then
-        cache[st.key] = { bad = r.name, t = os.time(), why = reason }
-        cache_save(cache)
-        st.bad_name = r.name
-    end
+    remember_failure(r, reason)
     -- When RIFE itself is the bottleneck (playback below realtime), lighter shaders at the
     -- same target cannot help: skip straight to the next lower target. Measured 2026-10-07,
     -- 1080p24 with rife=on: 180 -> 90 -> 60 -> 30 took 70 s with the +chroma siblings, every
@@ -391,8 +401,25 @@ local function step_down(reason)
     -- mistiming frames), and the new rung got blamed for it: 2026-10-07 rife30 "failed" at
     -- 25 mistimed/s right after rife60 had played at 66% speed. A zero-length exact seek
     -- resynchronises audio and video at once; playback-restart then re-arms the warm-up.
-    if was_slow then mp.commandv("seek", "0", "relative+exact") end
+    -- (deferred mode runs from a pause or seek, which has already resynchronised)
+    if was_slow and not opts.defer_steps then mp.commandv("seek", "0", "relative+exact") end
     osd("enhance: " .. r.name .. " can't keep up (" .. reason .. ") -> " .. st.ladder[st.level].name)
+end
+
+-- defer_steps: record the failure now, switch later (apply_pending, at the next pause/seek).
+local function defer_step(reason)
+    if st.pending or st.level >= #st.ladder then return end
+    remember_failure(st.ladder[st.level], reason)
+    st.pending = reason
+    msg.info("step-down deferred to next pause/seek: " .. reason)
+    publish()
+end
+
+local function apply_pending()
+    if not st or not st.ready or st.manual or not st.pending then return end
+    local reason = st.pending
+    st.pending = nil
+    step_down(reason)
 end
 
 ------------------------------------------------------------------ measurement
@@ -406,7 +433,7 @@ local function fresh_ms()
 end
 
 local function sample()
-    if not st or not st.ready or st.manual then return end
+    if not st or not st.ready or st.manual or st.pending then return end
     local now = mp.get_time()
     -- st.dirty is set by the observers below whenever the window cannot be trusted
     -- (pause, seek, cache stall, speed change); polling those flags once a second
@@ -474,7 +501,9 @@ local function sample()
         r.name, rate, dr, lr, vf, ms or -1, reason or "ok"))
     if reason then
         st.bad_count = st.bad_count + 1
-        if st.bad_count >= BAD_WINDOWS then step_down(reason) end
+        if st.bad_count >= BAD_WINDOWS then
+            if opts.defer_steps then defer_step(reason) else step_down(reason) end
+        end
     else
         st.bad_count = 0
         st.ok_count = (st.ok_count or 0) + 1
@@ -496,7 +525,8 @@ local function rearm()
     st.warm_until = mp.get_time() + ((r and (r.rife or r.mv)) and WARM_VF or WARM_SHADER)
     st.win, st.bad_count = nil, 0
 end
-mp.register_event("seek", rearm)
+-- a deferred step-down is applied first so the new rung gets the warm-up
+mp.register_event("seek", function() apply_pending(); rearm() end)
 mp.register_event("playback-restart", rearm)
 -- Window resize / fullscreen toggle: the render target changes size, every shader pass is
 -- re-allocated and frames drop while the user drags the border. Reported 2026-10-14: dragging
@@ -515,6 +545,7 @@ end)
 for _, p in ipairs({ "pause", "paused-for-cache", "seeking", "speed" }) do
     mp.observe_property(p, "native", function() if st then st.dirty = true end end)
 end
+mp.observe_property("pause", "bool", function(_, paused) if paused then apply_pending() end end)
 
 ------------------------------------------------------------------ events
 mp.register_event("start-file", function()
