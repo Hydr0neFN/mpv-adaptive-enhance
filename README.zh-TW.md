@@ -103,7 +103,8 @@
 | `adaptive_enhance-mv` | `auto`, `off` | `auto` |
 | `adaptive_enhance-rife` | `off`, `auto`, `on` | `off` |
 | `adaptive_enhance-content` | `auto`, `anime`, `live`, `grainy` | `auto` |
-| `adaptive_enhance-resync_seek` | `no`, `yes`（播放中降階後 1.5 秒，發出一次長度為零的精確跳轉；適用於只在跳轉時才重新同步的裝置播放器所控制的 mpv） | `no` |
+| `adaptive_enhance-resync_seek` | `no`, `yes`（播放中變更增強階層後 1.5 秒，發出一次長度為零的精確跳轉；適用於只在跳轉時才重新同步的裝置播放器所控制的 mpv） | `no` |
+| `adaptive_enhance-skip_top` | 整數 `0`, `1`, `2`, ...（永不使用階梯中最重的前 N 階；最後一階一定保留） | `0` |
 | `ytdl_adaptive-reload` | `yes`, `no`（播放中不切換解析度） | `yes` |
 | `ytdl_adaptive-fallback_clients` | 以 `+` 連接的 YouTube 客戶端名稱 | `web_embedded+tv+mweb` |
 

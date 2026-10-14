@@ -119,7 +119,8 @@ Set in `%APPDATA%\mpv\mpv.conf`, e.g. `script-opts-append=adaptive_enhance-mv=of
 | `adaptive_enhance-mv` | `auto`, `off` | `auto` |
 | `adaptive_enhance-rife` | `off`, `auto`, `on` | `off` |
 | `adaptive_enhance-content` | `auto`, `anime`, `live`, `grainy` | `auto` |
-| `adaptive_enhance-resync_seek` | `no`, `yes` (after a mid-playback step-down, issue a zero-length exact seek 1.5 s later; for mpv driven by a device player that resyncs only on seek) | `no` |
+| `adaptive_enhance-resync_seek` | `no`, `yes` (after a mid-playback rung change, issue a zero-length exact seek 1.5 s later; for mpv driven by a device player that resyncs only on seek) | `no` |
+| `adaptive_enhance-skip_top` | integer `0`, `1`, `2`, ... (never use the N heaviest rungs of the ladder; the last rung always stays available) | `0` |
 | `ytdl_adaptive-reload` | `yes`, `no` (no mid-playback resolution changes) | `yes` |
 | `ytdl_adaptive-fallback_clients` | YouTube clients joined with `+` | `web_embedded+tv+mweb` |
 

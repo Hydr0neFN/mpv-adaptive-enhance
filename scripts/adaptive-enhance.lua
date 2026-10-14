@@ -97,8 +97,10 @@ end
 
 -- script-opts: adaptive_enhance-rife=auto|on|off, adaptive_enhance-content=auto|anime|live|grainy,
 -- adaptive_enhance-resync_seek=yes (default no): for mpv driven by a device/funscript player
--- that resyncs only on a seek event: after a mid-playback step-down (or a pinned rung),
--- issue an exact zero-length seek 1.5 s later, once the new shaders have compiled.
+-- that resyncs only on a seek event: after any mid-playback rung change (step-down, pin,
+-- menu / key changes), issue an exact zero-length seek 1.5 s later, once the new shaders
+-- have compiled. adaptive_enhance-skip_top=N (default 0): never use the N heaviest rungs
+-- (for a machine where they have never held); clamped so the last rung always stays.
 -- (set rife=off for an mpv instance driven by another app: a VapourSynth spin-up mid-file
 -- is a 1.5 s hitch)
 -- RIFE defaults to OFF (2026-10-06): a rapid-seek test with RIFE active ended in a GPU
@@ -106,8 +108,10 @@ end
 -- from the Tab menu / Ctrl+r, or permanently with adaptive_enhance-rife=auto.
 -- mv = MVTools motion interpolation (cheap, CPU block matching), ON by default since
 -- 2026-10-07; RIFE (neural, GPU, much heavier) stays opt-in and ranks above it when on.
-local opts = { rife = "off", content = "auto", mv = "auto", resync_seek = false }
+local opts = { rife = "off", content = "auto", mv = "auto", resync_seek = false, skip_top = 0 }
 require("mp.options").read_options(opts, "adaptive_enhance")
+local skip_top = math.max(0, math.floor(tonumber(opts.skip_top) or 0))
+local function skip_n(ladder) return math.min(skip_top, math.max(#ladder - 1, 0)) end   -- rungs never used
 local rife_mode = (opts.rife == "on" or opts.rife == "auto") and opts.rife or "off"   -- auto | on | off   (session-wide, Ctrl+r / Tab menu)
 local mv_mode = (opts.mv == "off") and "off" or "auto"   -- auto | off (Tab menu)
 local session_content = CONTENT[opts.content] and opts.content or "auto"   -- auto | anime | live | grainy (session-wide, Alt+a/l/g/u / Tab menu)
@@ -150,11 +154,12 @@ local function publish()
     if not st then return end
     local r = st.ladder and st.ladder[st.level]
     local s = string.format(
-        "enhance: %s%s [%s]  rung %d/%d  scale %.2f (%s)  content %s\n" ..
+        "enhance: %s%s [%s]  rung %d/%d%s  scale %.2f (%s)  content %s\n" ..
         "MV %s%s  RIFE %s%s  last window: drop %.1f/s delayed %.1f/s vf %.1ffps\n" ..
         "key %s  learned fail: %s",
         r and r.name or "?", st.manual and " (MANUAL)" or "", r and short(r.shaders) or "",
-        st.level or 0, st.ladder and #st.ladder or 0, st.scale or 0, st.class or "?",
+        st.level or 0, st.ladder and #st.ladder or 0,
+        (skip_top > 0 and st.ladder) and string.format(" (top %d skipped)", skip_n(st.ladder)) or "", st.scale or 0, st.class or "?",
         st.content, mv_mode, st.mv_note or "", rife_mode, st.rife_note or "",
         st.last_drop or 0, st.last_delay or 0, st.last_vf or 0,
         st.key or "?", st.bad_name or "-")
@@ -282,7 +287,21 @@ local function write_target(fname, text)
     if f then f:write(text); f:close() end
 end
 
-local function apply(level, why)
+-- resync_seek: a seek event is the only thing that snaps a device player back to mpv's
+-- clock. Wait for the new shaders / filters to compile so the resync lands after the hitch.
+-- seek -> rearm() only restarts the warm-up; it never calls apply(), so this cannot loop.
+local function resync_later()
+    if not opts.resync_seek then return end
+    local s = st
+    if s.resync_timer then s.resync_timer:kill() end
+    s.resync_timer = mp.add_timeout(1.5, function()
+        if st ~= s or mp.get_property_bool("pause") then return end
+        mp.commandv("seek", "0", "relative+exact")
+    end)
+end
+
+-- quiet: the initial setup of a file (nothing is playing yet, no resync wanted)
+local function apply(level, why, quiet)
     st.level = level
     local r = st.ladder[level]
     st.setting = true
@@ -321,6 +340,7 @@ local function apply(level, why)
     st.bad_count, st.win, st.ok_count = 0, nil, 0
     msg.info(string.format("rung %d %s (%s) %s", level, r.name, short(r.shaders), why or ""))
     publish()
+    if not quiet then resync_later() end
 end
 
 local function start_level()
@@ -328,15 +348,15 @@ local function start_level()
     local e = cache[st.key]
     st.bad_name = e and e.bad or nil
     local bad_rank = e and rank_of(e.bad) or 1e9
-    for i, r in ipairs(st.ladder) do
-        if rank_of(r.name) < bad_rank then return i end
+    for i = skip_n(st.ladder) + 1, #st.ladder do
+        if rank_of(st.ladder[i].name) < bad_rank then return i end
     end
     return #st.ladder
 end
 
-local function setup(why)
+local function setup(why, quiet)
     st.ladder = build_ladder()
-    apply(start_level(), why)
+    apply(start_level(), why, quiet)
 end
 
 ------------------------------------------------------------------ init per file
@@ -356,7 +376,7 @@ local function try_init()
     st.key = string.format("v2|%dx%d@%d>%dx%d@%d|%s", w, h, math.floor(st.fps + 0.5),
                            dw, dh, math.floor(st.dfps + 0.5), st.content)
     st.ready = true
-    setup("start")
+    setup("start", true)
 end
 
 -- remember: this rung (and anything heavier) fails for this key
@@ -368,18 +388,6 @@ local function remember_failure(r, reason)
         cache_save(cache)
         st.bad_name = r.name
     end
-end
-
--- resync_seek: a seek event is the only thing that snaps a device player back to mpv's
--- clock. Wait for the new shaders / filters to compile so the resync lands after the hitch.
--- seek -> rearm() only restarts the warm-up; it never steps, so this cannot loop.
-local function resync_later()
-    if not opts.resync_seek then return end
-    local s = st
-    mp.add_timeout(1.5, function()
-        if st ~= s or mp.get_property_bool("pause") then return end
-        mp.commandv("seek", "0", "relative+exact")
-    end)
 end
 
 local function step_down(reason)
@@ -410,8 +418,8 @@ local function step_down(reason)
     -- mistiming frames), and the new rung got blamed for it: 2026-10-07 rife30 "failed" at
     -- 25 mistimed/s right after rife60 had played at 66% speed. A zero-length exact seek
     -- resynchronises audio and video at once; playback-restart then re-arms the warm-up.
-    if opts.resync_seek then resync_later()     -- the delayed seek also covers was_slow
-    elseif was_slow then mp.commandv("seek", "0", "relative+exact") end
+    -- (with resync_seek, apply() has already scheduled the delayed seek, which covers this)
+    if was_slow and not opts.resync_seek then mp.commandv("seek", "0", "relative+exact") end
     osd("enhance: " .. r.name .. " can't keep up (" .. reason .. ") -> " .. st.ladder[st.level].name)
 end
 
@@ -600,9 +608,8 @@ end)
 mp.register_script_message("adaptive-pin", function(name)
     if not st or not st.ready then return end
     for i, r in ipairs(st.ladder) do
-        if r.name == name then
+        if r.name == name and i > skip_n(st.ladder) then
             apply(i, "pinned by user"); st.manual = true; publish()
-            resync_later()
             osd("enhance: pinned " .. name .. " (" .. short(r.shaders) .. ") - auto stepping off")
             return
         end
@@ -722,9 +729,11 @@ local function menu()
         elseif k == "rung" then
             if not st or not st.ladder then return end
             local items = { { (st.manual and "[ ] " or "[x] ") .. "Auto - step down when frames drop", "@auto" } }
-            for _, r in ipairs(st.ladder) do
-                items[#items + 1] = { mark(st.manual and cur_rung, r.name,
-                    r.name .. "   " .. short(r.shaders) .. (r.rife and string.format(" + RIFE -> %.0f fps", r.target) or "") .. (r.mv and string.format(" + MV %s -> %.0f fps", r.mv, r.target) or "")), r.name }
+            for i, r in ipairs(st.ladder) do
+                if i > skip_n(st.ladder) then
+                    items[#items + 1] = { mark(st.manual and cur_rung, r.name,
+                        r.name .. "   " .. short(r.shaders) .. (r.rife and string.format(" + RIFE -> %.0f fps", r.target) or "") .. (r.mv and string.format(" + MV %s -> %.0f fps", r.mv, r.target) or "")), r.name }
+                end
             end
             choose("Enhancement level", items, function(v)
                 if v == "@auto" then
