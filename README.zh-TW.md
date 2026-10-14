@@ -112,6 +112,7 @@
 |---|---|
 | 開啟影片約 3 秒後 mpv 自動關閉，且無錯誤訊息 | VapourSynth 資料夾尚未加入 PATH。請登出並重新登入；若問題仍存在，請重新執行安裝程式。 |
 | mpv.net 卡在 "vapoursynth initializing" | RIFE 外掛程式在 mpv.net 中會卡死。安裝程式已在該處預設停用 RIFE；若想使用 RIFE，請使用 `mpv.exe`（桌面捷徑即為此）。 |
+| 由其他程式控制的 mpv（例如 funscript／裝置播放器）和裝置不同步 | 只在那個 mpv 執行個體關掉補幀：在它的 `mpv.conf` 加上 `script-opts-append=adaptive_enhance-mv=off` 與 `script-opts-append=adaptive_enhance-rife=off`。著色器不影響時間軸，可以保留。 |
 | YouTube：HTTP 403 或 "no video formats" | yt-dlp 版本過舊：執行 `winget upgrade yt-dlp.yt-dlp` 更新。 |
 | 播放檔案最初幾秒有卡頓 | 階梯機制調整時的正常現象（新類型的影片約需 15–40 秒）。 |
 | 畫面看起來跟以前一樣 | 按下 `` ` `` 檢查：在 1:1 比例且訊源清晰的情況下，幾乎沒有增強空間。可使用 `Ctrl+s` 對比。 |

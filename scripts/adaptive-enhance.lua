@@ -498,6 +498,19 @@ local function rearm()
 end
 mp.register_event("seek", rearm)
 mp.register_event("playback-restart", rearm)
+-- Window resize / fullscreen toggle: the render target changes size, every shader pass is
+-- re-allocated and frames drop while the user drags the border. Reported 2026-10-14: dragging
+-- the window edge stepped the ladder down and the cache remembered it. Each size change pushes
+-- the warm-up forward, so measuring resumes only once the size has been stable for WARM_SHADER.
+mp.observe_property("osd-dimensions", "native", function(_, d)
+    if not st or not st.ready or not d then return end
+    local sz = string.format("%dx%d", d.w or 0, d.h or 0)
+    if st.osd_size and st.osd_size ~= sz then
+        st.warm_until = math.max(st.warm_until or 0, mp.get_time() + WARM_SHADER)
+        st.win, st.bad_count, st.dirty = nil, 0, true
+    end
+    st.osd_size = sz
+end)
 
 for _, p in ipairs({ "pause", "paused-for-cache", "seeking", "speed" }) do
     mp.observe_property(p, "native", function() if st then st.dirty = true end end)

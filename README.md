@@ -120,7 +120,8 @@ Set in `%APPDATA%\mpv\mpv.conf`, e.g. `script-opts-append=adaptive_enhance-mv=of
 | `adaptive_enhance-rife` | `off`, `auto`, `on` | `off` |
 | `adaptive_enhance-content` | `auto`, `anime`, `live`, `grainy` | `auto` |
 | `ytdl_adaptive-reload` | `yes`, `no` (no mid-playback resolution changes) | `yes` |
-| `ytdl_adaptive-fallback_clients` | YouTube clients joined with `+` | `web_embedded+tv+mweb` |
+| `ytdl_adaptive-fallback_clients` | mpv driven by another app (e.g. a funscript/device player) drifts out of sync | Turn interpolation off for that mpv instance only: add `script-opts-append=adaptive_enhance-mv=off` and `script-opts-append=adaptive_enhance-rife=off` to its `mpv.conf`. Shaders do not affect timing and can stay on. |
+| YouTube clients joined with `+` | `web_embedded+tv+mweb` |
 
 ## Troubleshooting
 
