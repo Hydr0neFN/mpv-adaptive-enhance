@@ -7,8 +7,9 @@
 -- so no single resolution/fps limit is right. Instead:
 --
 --   1. Build a ladder for this file, heaviest first:
---        rife180+full -> rife180+chroma -> rife90+... -> rife60+... -> rife30+...
---          -> full -> light -> chroma -> none      (RIFE targets = refresh / 1, 2, 3, 6)
+--        rife180+chroma -> rife180+none -> rife90+... -> rife60+... -> rife30+...
+--          -> mv<target>flow/block (same targets) -> full -> light -> chroma -> none
+--      (RIFE and MV targets = refresh / 1, 2, 3, 6; interpolation rungs carry no CNN chain)
 --      (rife rungs only when 2 x source fps fits under the display refresh)
 --   2. Start at the highest rung not already known to fail for this exact
 --      source/display combination (learned cache, expires after EXPIRE_DAYS).
@@ -31,6 +32,10 @@ local SH       = ROOT .. "/shaders/"
 local MV_VF    = "@aemv:vapoursynth=file=[" .. ROOT .. "/vs/mvfps.vpy]:concurrent-frames=8:buffered-frames=16"
 local RIFE_VF  = "@aerife:vapoursynth=file=[" .. ROOT .. "/vs/rife.vpy]:concurrent-frames=2:buffered-frames=4"
 local CACHE    = ROOT .. "/adaptive-cache.json"
+
+-- LOAD_DIR holds the AV1 transcode batch driver (av1drv.py); its driver_*.pid and PAUSE_PC
+-- files are what compete with playback for load (spec 1).
+local LOAD_DIR = "E:\\Movies\\_av1"
 
 local EXPIRE_DAYS = 14
 local WINDOW      = 2      -- seconds of playback per measurement window
@@ -82,7 +87,7 @@ local LIGHT = {
 local CONTENT = { anime = true, live = true, grainy = true }
 -- global rank, so a failure recorded on one ladder shape applies to another
 local RANK = { full = 4, light = 3, chroma = 2, none = 1 }
--- RIFE rungs are named "rife<target fps>+full" / "rife<target>+chroma"; they rank above every
+-- RIFE rungs are named "rife<target fps>+chroma" / "rife<target>+none"; they rank above every
 -- plain rung, higher target first. (Old caches may still hold "rife+full"/"rife+chroma".)
 local function rank_of(name)
     if not name then return 1e9 end
@@ -92,23 +97,24 @@ local function rank_of(name)
     local t, kind = name:match("^rife([%d%.]*)%+(%a+)$")
     if not kind then return 1e9 end
     t = tonumber(t) or 1000
-    return 100 + t * 2 + (kind == "full" and 1 or 0)
+    return 100 + t * 2 + (kind == "full" and 1.5 or kind == "chroma" and 1 or 0)
 end
 
 -- script-opts: adaptive_enhance-rife=auto|on|off, adaptive_enhance-content=auto|anime|live|grainy,
--- adaptive_enhance-resync_seek=yes (default no): for mpv driven by a device/funscript player
+-- adaptive_enhance-resync_seek=yes (default no): for mpv driven by a device player (MultiFunPlayer-style)
 -- that resyncs only on a seek event: after any mid-playback rung change (step-down, pin,
 -- menu / key changes), issue an exact zero-length seek 1.5 s later, once the new shaders
 -- have compiled. adaptive_enhance-skip_top=N (default 0): never use the N heaviest rungs
 -- (for a machine where they have never held); clamped so the last rung always stays.
--- (set rife=off for an mpv instance driven by another app: a VapourSynth spin-up mid-file
--- is a 1.5 s hitch)
+-- (the MultiFunPlayer instance starts with rife=off: a VapourSynth spin-up mid-file is a
+-- 1.5 s hitch the device would follow)
 -- RIFE defaults to OFF (2026-10-06): a rapid-seek test with RIFE active ended in a GPU
 -- WATCHDOG live dump (driver reset), and the plugin freezes mpv.net. Opt in per session
 -- from the Tab menu / Ctrl+r, or permanently with adaptive_enhance-rife=auto.
 -- mv = MVTools motion interpolation (cheap, CPU block matching), ON by default since
 -- 2026-10-07; RIFE (neural, GPU, much heavier) stays opt-in and ranks above it when on.
-local opts = { rife = "off", content = "auto", mv = "auto", resync_seek = false, skip_top = 0 }
+-- 2026-10-30, owner: RIFE default auto (startup hitch accepted, frame rate is the priority).
+local opts = { rife = "auto", content = "auto", mv = "auto", resync_seek = false, skip_top = 0 }
 require("mp.options").read_options(opts, "adaptive_enhance")
 local skip_top = math.max(0, math.floor(tonumber(opts.skip_top) or 0))
 local function skip_n(ladder) return math.min(skip_top, math.max(#ladder - 1, 0)) end   -- rungs never used
@@ -116,6 +122,183 @@ local rife_mode = (opts.rife == "on" or opts.rife == "auto") and opts.rife or "o
 local mv_mode = (opts.mv == "off") and "off" or "auto"   -- auto | off (Tab menu)
 local session_content = CONTENT[opts.content] and opts.content or "auto"   -- auto | anime | live | grainy (session-wide, Alt+a/l/g/u / Tab menu)
 local st                   -- per-file state
+
+------------------------------------------------------------------ pure logic (testable without playback)
+-- Kept free of mp.* so tests/test_learning.lua can load this file in its own Lua state and
+-- call these directly (mpv gives every script a separate state, so a guarded export is the
+-- only way to reach them; see the sentinel check just below).
+local function res_bucket(w, h)
+    -- long edge = the larger dimension; 2026-10-30 (spec 1). 1088 coded heights (H.264 pads
+    -- 1080 to 1088) land in the same bucket as their display 1080, which is what we want.
+    local long = math.max(w or 0, h or 0)
+    local b
+    if long <= 720 then b = "720"
+    elseif long <= 1080 then b = "1080"
+    elseif long <= 1440 then b = "1440"
+    elseif long <= 2160 then b = "2160"
+    elseif long <= 4096 then b = "4096"
+    else b = "4096+" end
+    -- VR side-by-side is wide (2:1) or square (1:1) and big; its own bucket so a headset file
+    -- never shares a rung with a flat one.
+    local r = (h or 0) > 0 and (w or 0) / h or 0
+    if (w or 0) >= 3840 and (math.abs(r - 2.0) < 0.05 or math.abs(r - 1.0) < 0.05) then
+        return "vr" .. b
+    end
+    return b
+end
+
+-- 29.97 / 30 / 31 share a bucket so NTSC pulldown variants keep one learned rung (spec 1).
+local function fps_bucket(fps)
+    fps = fps or 0
+    if fps <= 25 then return "25"
+    elseif fps <= 31 then return "31"
+    elseif fps <= 50 then return "50"
+    elseif fps <= 61 then return "61"
+    elseif fps <= 121 then return "121"
+    else return "121+" end
+end
+
+-- Real liveness check for a driver pid: a stale pid file after a reboot must not look busy
+-- forever (pids get reused). Ask tasklist for that pid; it counts as live only when the call
+-- succeeds, prints the quoted pid and an image whose first CSV field starts with "python".
+local function default_alive(pid)
+    local ok, res = pcall(mp.command_native, { name = "subprocess",
+        args = { "tasklist", "/FI", "PID eq " .. tostring(pid), "/NH", "/FO", "CSV" },
+        capture_stdout = true, playback_only = false })
+    if not ok or type(res) ~= "table" then return false end
+    local out = res.stdout
+    if (res.status ~= 0 and not out) or type(out) ~= "string" then return false end
+    if not out:find('"' .. tostring(pid) .. '"', 1, true) then return false end
+    for line in out:gmatch("[^\r\n]+") do
+        local first = line:match('^"%s*([^"]*)"') or line:match("^([^,]+)")
+        if first and first:lower():match("^python") then return true end
+    end
+    return false
+end
+
+-- busy when a driver_*.pid names a live process and PAUSE_PC is absent, else idle; anything
+-- missing or unreadable counts as idle. inj lets tests avoid E:\Movies (spec 1: once per file).
+local function load_state(inj)
+    inj = inj or {}
+    local dir = inj.dir or LOAD_DIR
+    local paused = inj.paused
+    if paused == nil then
+        local f = io.open(dir .. "/PAUSE_PC", "r")
+        paused = f ~= nil
+        if f then f:close() end
+    end
+    if paused then return "idle" end
+    local names = inj.pid_files
+    if not names then
+        local ok, list = pcall(utils.readdir, dir)
+        if not ok or type(list) ~= "table" then return "idle" end
+        names = {}
+        for _, n in ipairs(list) do
+            if n:match("^driver_.*%.pid$") then names[#names + 1] = n end
+        end
+    end
+    local alive = inj.alive or default_alive
+    for _, n in ipairs(names) do
+        local pid
+        if inj.pid_of then
+            pid = inj.pid_of(n)
+        else
+            local f = io.open(dir .. "/" .. n, "r")
+            if f then pid = tonumber((f:read("*a") or ""):match("%d+")); f:close() end
+        end
+        if pid and alive(pid) then return "busy" end
+    end
+    return "idle"
+end
+
+local function exact_key(w, h, fps, dw, dh, dfps, content)
+    return string.format("v2|%dx%d@%d>%dx%d@%d|%s", w, h, math.floor((fps or 0) + 0.5),
+                         dw, dh, math.floor((dfps or 0) + 0.5), content)
+end
+
+local function class_key(w, h, fps, dw, dh, dfps, content, load)
+    return string.format("c1|%s|%s|%dx%d@%d|%s|%s", res_bucket(w, h), fps_bucket(fps),
+                         dw, dh, math.floor((dfps or 0) + 0.5), content, load or "idle")
+end
+
+local function level_of(ladder, name)
+    if not name then return nil end
+    for i, r in ipairs(ladder) do if r.name == name then return i end end
+    return nil
+end
+
+-- A cache entry is dead after EXPIRE_DAYS (spec 7); a table without a timestamp is dead too.
+local function expired(e, now, days)
+    return not (type(e) == "table" and e.t and now - e.t < (days or EXPIRE_DAYS) * 86400)
+end
+
+-- Re-read right before writing and merge only this key, so a second player writing another key
+-- concurrently is never clobbered (spec: concurrency). read/write are injected so tests can
+-- drive it without touching the real cache file.
+local function merge_write(read, write, key, update)
+    local c = read()
+    c[key] = type(update) == "function" and update(c[key]) or update
+    write(c)
+    return c[key]
+end
+
+-- Record a failure under one entry: keep the LIGHTER failing rung we have seen (the lower
+-- rank_of, the conservative rule), so the learned limit never rises on a new failure (spec 5).
+local function note_fail(e, rung, reason, now)
+    e = e or {}
+    if not e.bad or rank_of(e.bad) > rank_of(rung) then
+        e.bad, e.why, e.t = rung, reason, now or os.time()
+    end
+    -- A rung that held on this entry is unsafe once a rung no lighter than it fails:
+    -- rank_of(rung) <= rank_of(e.held) means the held rung is not below the failure.
+    if e.held and rank_of(rung) <= rank_of(e.held) then e.held, e.held_n = nil, 0 end
+    return e
+end
+
+-- A failed probe starts the clean-play count over (spec 4).
+local function probe_failed(e)
+    e = e or {}
+    e.held_n = 0
+    return e
+end
+
+-- Start rung (spec 3/4): exact-key knowledge first, then class, then today's top rung.
+-- Returns level, reason, held rung, source ("exact"/"class"/nil).
+local function pick_start(ladder, exact, cls, skip)
+    skip = skip or 0
+    local e, src
+    if exact and (exact.held or exact.bad) then e, src = exact, "exact"
+    elseif cls and (cls.held or cls.bad) then e, src = cls, "class" end
+    local bad_r = (e and e.bad) and rank_of(e.bad) or 1e9
+    if e and e.held then
+        local lv = level_of(ladder, e.held)
+        -- Trust the held rung only when it is strictly lighter than the learned bad rung;
+        -- otherwise it is not a safe start and we fall through to the bad-only branch.
+        if lv and lv > skip and rank_of(e.held) < bad_r then
+            local up = lv - 1   -- one rung heavier
+            if (e.held_n or 0) >= 3 and up > skip and rank_of(ladder[up].name) < bad_r then
+                return up, "probe", e.held, src
+            end
+            return lv, src == "exact" and "exact held" or "class held", e.held, src
+        end
+    end
+    if e and e.bad then
+        for i = skip + 1, #ladder do
+            if rank_of(ladder[i].name) < bad_r then return i, "bad-only", nil, src end
+        end
+        return #ladder, "bad-only", nil, src
+    end
+    return skip + 1, "none", nil, nil
+end
+
+local ADAPTIVE_PURE = {
+    res_bucket = res_bucket, fps_bucket = fps_bucket, load_state = load_state,
+    exact_key = exact_key, class_key = class_key, rank_of = rank_of, level_of = level_of,
+    expired = expired, merge_write = merge_write, note_fail = note_fail,
+    probe_failed = probe_failed, pick_start = pick_start,
+}
+-- Tests set the sentinel and loadfile() this script to get the table above without pressing play.
+if _G.ADAPTIVE_PURE then return ADAPTIVE_PURE end
 
 ------------------------------------------------------------------ cache
 local function cache_load()
@@ -125,13 +308,13 @@ local function cache_load()
     f:close()
     local now, out = os.time(), {}
     for k, v in pairs(t) do
-        if type(v) == "table" and v.t and now - v.t < EXPIRE_DAYS * 86400 then out[k] = v end
+        if not expired(v, now) then out[k] = v end
     end
     return out
 end
 
 local function cache_save(c)
-    -- write-then-rename so a second player (mpv.net, another mpv instance) never reads a
+    -- write-then-rename so a second player (mpv.net, MultiFunPlayer's mpv) never reads a
     -- truncated file
     local tmp = CACHE .. ".tmp" .. tostring(mp.get_property_number("pid") or 0)
     local f = io.open(tmp, "w")
@@ -156,13 +339,13 @@ local function publish()
     local s = string.format(
         "enhance: %s%s [%s]  rung %d/%d%s  scale %.2f (%s)  content %s\n" ..
         "MV %s%s  RIFE %s%s  last window: drop %.1f/s delayed %.1f/s vf %.1ffps\n" ..
-        "key %s  learned fail: %s",
+        "key %s\nclass %s  start %s  held_n %d  learned fail: %s",
         r and r.name or "?", st.manual and " (MANUAL)" or "", r and short(r.shaders) or "",
         st.level or 0, st.ladder and #st.ladder or 0,
         (skip_top > 0 and st.ladder) and string.format(" (top %d skipped)", skip_n(st.ladder)) or "", st.scale or 0, st.class or "?",
         st.content, mv_mode, st.mv_note or "", rife_mode, st.rife_note or "",
         st.last_drop or 0, st.last_delay or 0, st.last_vf or 0,
-        st.key or "?", st.bad_name or "-")
+        st.key or "?", st.class_key or "?", st.start_reason or "-", st.held_n or 0, st.bad_name or "-")
     mp.set_property_native("user-data/adaptive/status", s)
 end
 
@@ -176,14 +359,24 @@ local function osd(text, sec) mp.osd_message(text, sec or 2.5) end
 -- any target (180/90/60/30 for a 180 Hz panel) and its cost follows the frames it generates.
 -- Seed 105 Mpx/s: 1080p24 -> 48 (99.5) held, 1080p30 -> 60 (124) was borderline.
 local RIFE_SEED = 105e6
+-- Per-class budget (spec 6) wins over the global one when this class has learned its own,
+-- so a class that fails RIFE does not drag the whole machine down.
 local function rife_budget()
-    local e = cache_load()["rife_budget_out"]
+    local c = cache_load()
+    local ce = st and st.class_key and c[st.class_key]
+    if ce and ce.rife_budget then return ce.rife_budget end
+    local e = c["rife_budget_out"]
     return (e and e.rate) or RIFE_SEED
 end
 local function set_rife_budget(rate, why)
     local c = cache_load()
     c["rife_budget_out"] = { rate = rate, t = os.time(), why = why }
     cache_save(c)
+    if st and st.class_key then
+        merge_write(cache_load, cache_save, st.class_key, function(e)
+            e = e or {}; e.rife_budget = rate; e.t = os.time(); return e
+        end)
+    end
     msg.info(string.format("RIFE budget -> %.0f Mpx/s (%s)", rate / 1e6, why))
 end
 
@@ -240,11 +433,14 @@ local function build_ladder()
         end
     end
 
+    -- 2026-10-30, owner: frame rate first, image quality second. Interpolation rungs carry
+    -- only chroma reconstruction (or nothing), so the GPU goes to RIFE instead of the CNN /
+    -- sharpen chain; "full" shaders are used only once no interpolation rung holds.
     local L = {}
     for _, t in ipairs(targets) do
         local tag = string.format("rife%.0f", t)
-        L[#L + 1] = { name = tag .. "+full", shaders = full, rife = true, target = t }
         L[#L + 1] = { name = tag .. "+chroma", shaders = chroma, rife = true, target = t }
+        if #chroma > 0 then L[#L + 1] = { name = tag .. "+none", shaders = {}, rife = true, target = t } end
     end
     -- MVTools rungs, same refresh-aligned targets, each as pixel-wise "flow" then the
     -- cheaper "block". Measured 2026-10-07 at 180 Hz (Ryzen 7 7700): 1080p30/60 -> block 180
@@ -259,8 +455,8 @@ local function build_ladder()
             local t = dfps / k
             if t >= fps * 1.15 then
                 local tag = string.format("mv%.0f", t)
-                L[#L + 1] = { name = tag .. "flow", shaders = full, mv = "flow", target = t }
-                L[#L + 1] = { name = tag .. "block", shaders = full, mv = "block", target = t }
+                L[#L + 1] = { name = tag .. "flow", shaders = chroma, mv = "flow", target = t }
+                L[#L + 1] = { name = tag .. "block", shaders = chroma, mv = "block", target = t }
                 n = n + 1
             end
         end
@@ -345,13 +541,16 @@ end
 
 local function start_level()
     local cache = cache_load()
-    local e = cache[st.key]
-    st.bad_name = e and e.bad or nil
-    local bad_rank = e and rank_of(e.bad) or 1e9
-    for i = skip_n(st.ladder) + 1, #st.ladder do
-        if rank_of(st.ladder[i].name) < bad_rank then return i end
-    end
-    return #st.ladder
+    local exact = cache[st.key]
+    local cls = st.class_key and cache[st.class_key]
+    st.bad_name = (exact and exact.bad) or (cls and cls.bad) or nil
+    local level, reason, _, src = pick_start(st.ladder, exact, cls, skip_n(st.ladder))
+    local ce = src == "class" and cls or exact
+    st.start_reason = reason
+    st.start_key = src == "class" and st.class_key or st.key
+    st.held_n = (ce and ce.held_n) or 0
+    st.probing, st.probe_level = reason == "probe", (reason == "probe" and level or nil)
+    return level
 end
 
 local function setup(why, quiet)
@@ -373,21 +572,51 @@ local function try_init()
     st.scale = math.min(dw / w, dh / h)
     st.class = st.scale >= 1.6 and "up2" or (st.scale > 1.30 and "up")
                or (st.scale >= 0.95 and "native" or "down")
-    st.key = string.format("v2|%dx%d@%d>%dx%d@%d|%s", w, h, math.floor(st.fps + 0.5),
-                           dw, dh, math.floor(st.dfps + 0.5), st.content)
+    st.w, st.h, st.dw, st.dh = w, h, dw, dh
+    st.key = exact_key(w, h, st.fps, dw, dh, st.dfps, st.content)
+    -- load is read once per file load (spec 1): it is a process scan, not a per-window cost
+    st.load = load_state()
+    st.class_key = class_key(w, h, st.fps, dw, dh, st.dfps, st.content, st.load)
     st.ready = true
     setup("start", true)
 end
 
--- remember: this rung (and anything heavier) fails for this key
+-- remember: this rung (and anything heavier) fails for this key. Written under the exact key
+-- and the class key (spec 5); a class failure never hides an exact held because pick_start
+-- consults the exact key first.
 local function remember_failure(r, reason)
-    local cache = cache_load()
-    local e = cache[st.key]
-    if not e or rank_of(e.bad) > rank_of(r.name) then
-        cache[st.key] = { bad = r.name, t = os.time(), why = reason }
-        cache_save(cache)
-        st.bad_name = r.name
+    if not r then return end
+    local now = os.time()
+    for _, k in ipairs({ st.key, st.class_key }) do
+        if k then
+            merge_write(cache_load, cache_save, k, function(e)
+                return note_fail(e, r.name, reason, now)
+            end)
+        end
     end
+    if not st.bad_name or rank_of(r.name) > rank_of(st.bad_name) then st.bad_name = r.name end
+end
+
+-- Persist learned successes (spec 2): the heaviest rung that held >= 30 s, and how many
+-- consecutive files this key has held it. Written on step-down and at file end.
+local function write_progress()
+    if not st or not st.ready or not st.held_name then return end
+    local now = os.time()
+    for _, k in ipairs({ st.key, st.class_key }) do
+        if k then
+            merge_write(cache_load, cache_save, k, function(e)
+                e = e or {}
+                if e.held == st.held_name then
+                    if not st.held_counted then e.held_n = (e.held_n or 0) + 1 end
+                else
+                    e.held, e.held_n = st.held_name, 1
+                end
+                e.t = now
+                return e
+            end)
+        end
+    end
+    st.held_counted = true
 end
 
 local function step_down(reason)
@@ -395,30 +624,54 @@ local function step_down(reason)
     if st.level >= #st.ladder then return end
     -- a RIFE failure (not a shader one) lowers the learned RIFE budget
     local out_rate = r.rife and (st.src_rate / math.max(st.fps, 1)) * r.target or 0
-    if r.rife and (r.name:match("chroma$") or reason:match("^playing") or reason:match("^RIFE")) then
-        set_rife_budget(math.min(rife_budget(), out_rate * 0.95), "fail " .. reason)
+    -- (the ladder admits targets up to 1.15 x budget, so a failure must land below out_rate / 1.15,
+    -- or the same target is tried again on every new source; 2026-10-30)
+    local shader_light = r.rife and (st.last_ms or 0) < 0.25 * 1000 / math.max(st.dfps or 0, 1)
+    if r.rife and (#r.shaders == 0 or shader_light or reason:match("^playing") or reason:match("^RIFE")) then
+        set_rife_budget(math.min(rife_budget(), out_rate * 0.8), "fail " .. reason)
     end
     remember_failure(r, reason)
+    -- A held rung that later fails in the same file must not stay held: H is only safe below
+    -- the failing rung, so drop it when rank_of(r.name) <= rank_of(st.held_name) (which covers
+    -- r.name == st.held_name). Done before write_progress() so the held value is not re-written.
+    if st.held_name and rank_of(r.name) <= rank_of(st.held_name) then st.held_name = nil end
+    -- A failed probe (spec 4): the rung above held did not hold. Remember it (done above) and
+    -- start the clean-play count over so the next files do not probe again immediately.
+    if st.probing and st.level == st.probe_level then
+        st.probing = false
+        merge_write(cache_load, cache_save, st.start_key, function(e)
+            e = probe_failed(e); e.t = os.time(); return e
+        end)
+        st.held_counted = true
+    end
+    write_progress()
     -- When RIFE itself is the bottleneck (playback below realtime), lighter shaders at the
     -- same target cannot help: skip straight to the next lower target. Measured 2026-10-07,
     -- 1080p24 with rife=on: 180 -> 90 -> 60 -> 30 took 70 s with the +chroma siblings, every
     -- one of which failed the same way.
     local nxt = st.level + 1
     local slow_cut = r.mv and 0.6 or 0.8
-    if (r.rife or r.mv) and (st.last_rate or 1) < slow_cut then
+    -- 2026-10-30: a RIFE rung whose shader chain is nearly free (CfL-Lite ~0.5 ms against a
+    -- 6.9 ms refresh) fails because of RIFE, not the shaders, so its "+none" sibling would
+    -- fail the same way and cost another ~11 s of stutter.
+    if (r.rife or r.mv) and ((st.last_rate or 1) < slow_cut or shader_light) then
         while st.ladder[nxt] and ((r.rife and st.ladder[nxt].rife) or (r.mv and st.ladder[nxt].mv))
               and st.ladder[nxt].target == r.target do
             nxt = nxt + 1
         end
         nxt = math.min(nxt, #st.ladder)
+        -- the skipped siblings failed with it: remember the lowest of them, or the next
+        -- playback would start on one of them and fail all over again
+        if nxt - 1 > st.level then remember_failure(st.ladder[nxt - 1], reason) end
     end
-    local was_slow = (st.last_rate or 1) < 0.8
-    apply(nxt, reason)
-    -- After seconds below realtime, mpv spends the next seconds catching up (dropping /
+    -- After a rung that lagged or dropped, mpv spends the next seconds catching up (dropping /
     -- mistiming frames), and the new rung got blamed for it: 2026-10-07 rife30 "failed" at
-    -- 25 mistimed/s right after rife60 had played at 66% speed. A zero-length exact seek
-    -- resynchronises audio and video at once; playback-restart then re-arms the warm-up.
-    -- (with resync_seek, apply() has already scheduled the delayed seek, which covers this)
+    -- 25 mistimed/s right after rife60 had played at 66% speed; 2026-10-30 mv144flow was
+    -- blamed for the catch-up after rife48 (81-85% speed, above the old 0.8 cut). A zero-length
+    -- exact seek resynchronises audio and video at once; playback-restart then re-arms the
+    -- warm-up. (with resync_seek, apply() has already scheduled the delayed seek, which covers this)
+    local was_slow = (st.last_rate or 1) < 0.97 or (st.last_drop or 0) > 1
+    apply(nxt, reason)
     if was_slow and not opts.resync_seek then mp.commandv("seek", "0", "relative+exact") end
     osd("enhance: " .. r.name .. " can't keep up (" .. reason .. ") -> " .. st.ladder[st.level].name)
 end
@@ -506,6 +759,11 @@ local function sample()
     else
         st.bad_count = 0
         st.ok_count = (st.ok_count or 0) + 1
+        -- 15 x WINDOW = 30 s clean: this rung holds for this file. Keep the heaviest that did
+        -- (we only ever step down, so the first 30 s is the highest rung that held; spec 2).
+        if st.ok_count >= 15 and (not st.held_name or rank_of(r.name) > rank_of(st.held_name)) then
+            st.held_name = r.name
+        end
         local out_rate = r.rife and (st.src_rate / math.max(st.fps, 1)) * r.target or 0
         if r.rife and st.ok_count >= 15 and not st.budget_raised and out_rate > rife_budget() then
             st.budget_raised = true
@@ -548,6 +806,8 @@ end
 mp.register_event("start-file", function()
     st = { content = session_content, bad_count = 0 }
 end)
+-- file end / unload: this is when a clean play counts toward held_n (spec 2)
+mp.register_event("end-file", function() write_progress() end)
 mp.register_event("file-loaded", function() try_init() end)
 mp.observe_property("video-params", "native", function() try_init() end)
 -- refresh-rate change (165 <-> 180 Hz, monitor replug): budgets and the cache key depend on it
@@ -575,6 +835,7 @@ mp.register_script_message("adaptive-content", function(mode)
     session_content = st.content
     st.manual = false
     st.key = st.key:gsub("|[^|]*$", "|" .. st.content)
+    st.class_key = class_key(st.w, st.h, st.fps, st.dw, st.dh, st.dfps, st.content, st.load)
     setup("content " .. st.content)
     osd("content: " .. st.content .. " -> " .. st.ladder[st.level].name .. " (" .. short(st.ladder[st.level].shaders) .. ")")
 end)
