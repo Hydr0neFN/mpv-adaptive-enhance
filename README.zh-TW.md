@@ -1,10 +1,17 @@
+[English](README.md) · **繁體中文**
+
 # mpv-adaptive-enhance
 
-[English](README.md)
+在 Windows 上把 [mpv](https://mpv.io) 設定成會**在每部影片播放當下**挑出顯示卡真的撐得住的畫質：放大／銳化著色器、動態補幀，串流則依你的網路頻寬決定 YouTube 解析度。
 
-讓 Windows 上的 [mpv](https://mpv.io) 在**播放每部影片時，即時**選擇顯示卡實際能穩定負擔的最佳畫面：包含放大／銳化著色器、動態補幀，以及（針對串流）依照網路頻寬自動選擇 YouTube 解析度。一旦開始掉格，就會自動降低一個階層，並記住此類影片在該螢幕上的效能上限。
+## 重點一覽
 
-開發初衷是因固定的著色器設定往往無法適用所有檔案：對 1080p30 影片毫無負擔的配置，在 1080p180 影片上可能會每秒掉 50 格以上；而在網路塞車時播放 4K 串流，則只會一直卡在緩衝。
+| | |
+|---|---|
+| 問題 | 固定的著色器設定一定有些檔案不合用：對 1080p30 影片毫無負擔的配置，換到 1080p180 影片可能每秒掉 50+ 格；4K 串流在網路塞車時也只會一直卡在緩衝。 |
+| 做了什麼 | 每部影片當場建一套階梯，由重到輕：`[RIFE + shaders]` → `[MVTools interp + shaders]` → `[full shaders]` → `[light]` → `[chroma]` → `[none]`。從這個來源和螢幕還沒失敗過的最高一階開始；開始掉格就降一階，並記住這類影片在這塊螢幕上的上限。 |
+| 結果 | 測試機上，把 1080p 畫面升到 1440p，每幀 GPU 時間是 1.3–4.5 ms；1080p60 → 90 fps 的 CPU 補幀可跑滿速。 |
+| 技術組成 | Windows 10/11、mpv（shinchiro 版本）、Lua 腳本、VapourSynth 搭配 MVTools 與 RIFE（Vulkan）、yt-dlp、Python 3.13。 |
 
 ## 運作方式
 
@@ -28,9 +35,9 @@
 | 組件 | 選擇項目 |
 |---|---|
 | `adaptive-enhance.lua` | 依渲染比例（放大 / 1:1 / 縮小）與內容類型選擇著色器組合，以及補幀設定。 |
-| `ytdl-adaptive.lua` | 依測得的頻寬選擇串流高度（2160 → 360）；當串流無法開啟時，嘗試其他 YouTube 播放客戶端。 |
+| `ytdl-adaptive.lua` | 依測得的頻寬選擇串流高度（2160 → 360）；串流開不起來時，改試其他 YouTube 播放客戶端。 |
 | `mvfps.vpy` | 低開銷的動態補償補幀（MVTools，在 CPU 上執行），例如 30 → 90/180 fps。**預設開啟。** |
-| `rife.vpy` | AI 補幀（RIFE，Vulkan 顯示卡）。畫質更佳，但負擔沉重許多。**預設關閉。** |
+| `rife.vpy` | AI 補幀（RIFE，Vulkan 顯示卡）。畫質更好，負擔重得多。**預設關閉。** |
 
 著色器組合（CfL = chroma-from-luma 色度預測）：
 
@@ -45,38 +52,38 @@
 
 - 64 位元 Windows 10/11，需有 `winget`（一般 Windows 10/11 安裝均已內建；若找不到 `winget` 指令，請至 Microsoft Store 安裝 "App Installer"）。
 - 具備最新 Vulkan 驅動程式的顯示卡。
-- 安裝過程中需連線網路，並具備約 300 MB 磁碟空間（供 mpv、Python、VapourSynth 與外掛程式使用）。
-- 不需要系統管理員帳號，但在安裝 mpv 時 Windows 可能會跳出一次權限提示。
+- 安裝過程需要網路連線，並備妥約 300 MB 磁碟空間（供 mpv、Python、VapourSynth 與外掛程式使用）。
+- 不需要系統管理員帳號，但安裝 mpv 時 Windows 可能會跳出一次權限提示。
 
-**僅在單一設備上測試過：** AMD Radeon RX 9070 XT、Ryzen 7 7700、2560x1440 @ 180 Hz。這套階梯機制在設計上會自動適應較慢的硬體，但尚未在 NVIDIA、Intel 顯示卡與其他螢幕面板上測試過。在未測試過的顯示卡上，播放每種新類型的影片最初幾分鐘可能會有卡頓，這是階梯機制正在學習適應；按下 `Ctrl+Shift+r` 可讓它重新學習。歡迎回報測試結果。
+**只在同一台機器上測過：** AMD Radeon RX 9070 XT、Ryzen 7 7700、2560x1440、180 Hz。這套階梯設計上會配合較慢的硬體，但 NVIDIA、Intel 顯示卡與其他螢幕面板都還沒試過。在沒測過的顯示卡上，每種新類型的影片前幾分鐘可能會卡頓，因為階梯還在學；按 `Ctrl+Shift+r` 可以讓它重學。歡迎回報結果。
 
 ## 安裝方式
 
-1. 下載此儲存庫（點擊綠色的 **Code** 按鈕 → **Download ZIP**）並解壓縮。
-2. 開啟解壓縮後的資料夾，在空白處按滑鼠右鍵 → **在終端機中開啟**，並執行：
+1. 下載這個儲存庫（點綠色 **Code** 按鈕 → **Download ZIP**）並解壓縮。
+2. 開啟解壓後的資料夾，在空白處按右鍵 → **在終端機中開啟**，然後執行：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
 
-3. 登出 Windows 並重新登入一次（讓 mpv 讀取更新後的 PATH 環境變數）。
+3. 登出 Windows 再重新登入一次（讓 mpv 讀到更新後的 PATH）。
 
-安裝程式：
+安裝程式會：
 
-- 透過 `winget` 安裝 mpv（shinchiro 版本）、yt-dlp、Deno 與 Python 3.13（已安裝的項目會自動略過；mpv 可能會跳出一次 Windows 權限提示）；
-- 透過 `pip` 安裝 VapourSynth 並完成註冊，以便 mpv 偵測與讀取；
-- 從原作者處下載 MVTools、RIFE 外掛程式與著色器；
-- 將 `mpv.conf`、`input.conf`、腳本及 `.vpy` 檔案寫入 `%APPDATA%\mpv`（若已有 `mpv.conf` / `input.conf`，會先備份至 `%APPDATA%\mpv\backup-<date>\`）；
-- 若已安裝 [mpv.net](https://github.com/mpvnet-player/mpv.net)，也會一併設定；
+- 用 `winget` 安裝 mpv（shinchiro 版本）、yt-dlp、Deno 與 Python 3.13（已裝的會略過；mpv 可能會跳一次 Windows 權限提示）；
+- 用 `pip` 安裝 VapourSynth 並完成註冊，讓 mpv 找得到；
+- 從原作者那裡下載 MVTools、RIFE 外掛與著色器；
+- 把 `mpv.conf`、`input.conf`、腳本與 `.vpy` 檔寫進 `%APPDATA%\mpv`（原有的 `mpv.conf` / `input.conf` 會先複製到 `%APPDATA%\mpv\backup-<date>\`）；
+- 如果有裝 [mpv.net](https://github.com/mpvnet-player/mpv.net)，一併設定好；
 - 在桌面建立 **Play in mpv** 捷徑。
 
-可選參數：`-SkipRife`（不下載 RIFE）、`-NoShortcut`、`-MvtoolsDll <path>`（使用自訂建置版本）。重新執行安裝程式可直接就地更新所有組件。
+可選參數：`-SkipRife`（不下載 RIFE）、`-NoShortcut`、`-MvtoolsDll <path>`（用你自己編的版本）。重新執行安裝程式就會原地更新全部內容。
 
 ## 使用方式
 
-- **本機檔案：** 如常使用 mpv 開啟，或將檔案拖曳至 **Play in mpv**。
+- **本機檔案：** 照平常方式用 mpv 開啟，或把檔案拖到 **Play in mpv** 上。
 - **YouTube / 其他網站：** 複製連結後，連按兩下 **Play in mpv**。
-- 播放新類型的影片時，前 **15–40 秒** 可能會有一兩次短暫頓挫，這是腳本在測量顯示卡能負擔的效能上限。測量結果會快取保存，下次播放類似檔案時就會直接從合適的階層開始。
+- 每種新類型的影片，前 **15–40 秒**可能會頓一兩下，這是腳本在量你的顯示卡撐得住多少。量到的結果會快取，下次播類似的檔案就直接從對的階層開始。
 
 ### 快捷鍵
 
@@ -84,58 +91,58 @@
 |---|---|
 | `Tab` | 選單：影片類型、增強層級、動態補幀、RIFE、串流畫質 |
 | `` ` `` | 即時狀態覆蓋層（目前階層、掉格數、渲染時間） |
-| `Ctrl+i` / `Ctrl+Shift+i` | 單行狀態資訊 / 目前啟用的著色器清單 |
+| `Ctrl+i` / `Ctrl+Shift+i` | 單行狀態 / 目前啟用的著色器清單 |
 | `Alt+a` / `Alt+l` / `Alt+g` / `Alt+u` | 影片類型：動漫/3D、真人實拍、顆粒感 / 低位元率、切回自動 |
-| `Ctrl+r` | RIFE：關閉 → 自動 → 開啟 |
-| `Ctrl+s` | 關閉 / 重新開啟所有增強功能（A/B 對比） |
-| `Ctrl+Shift+r` | 清除此影片來源與螢幕已學習的效能限制 |
-| `Ctrl+1` / `Ctrl+2` | 串流：最佳畫質（最高 4K）/ ≤1080p30（以便執行 RIFE） |
-| `Alt+0` … `Alt+6` | 手動著色器預設檔（直到按下 `Alt+u`） |
-| `Ctrl+d` | 開啟/關閉 去色帶（Deband） |
-| `Ctrl+p` | mpv 內建統計資訊頁面 |
+| `Ctrl+r` | RIFE：關 → 自動 → 開 |
+| `Ctrl+s` | 全部增強關掉 / 再開（A/B 對比） |
+| `Ctrl+Shift+r` | 清掉這個來源與螢幕已學到的上限 |
+| `Ctrl+1` / `Ctrl+2` | 串流：最佳畫質（最高 4K）/ ≤1080p30（讓 RIFE 跑得動） |
+| `Alt+0` … `Alt+6` | 手動著色器預設組（按 `Alt+u` 前的臨時選擇） |
+| `Ctrl+d` | Deband 開/關 |
+| `Ctrl+p` | mpv 自己的統計頁面 |
 
 ### 設定選項
 
-於 `%APPDATA%\mpv\mpv.conf` 中設定，例如 `script-opts-append=adaptive_enhance-mv=off`：
+在 `%APPDATA%\mpv\mpv.conf` 裡設定，例如 `script-opts-append=adaptive_enhance-mv=off`：
 
 | 選項 | 可選值 | 預設值 |
 |---|---|---|
 | `adaptive_enhance-mv` | `auto`, `off` | `auto` |
 | `adaptive_enhance-rife` | `off`, `auto`, `on` | `off` |
 | `adaptive_enhance-content` | `auto`, `anime`, `live`, `grainy` | `auto` |
-| `adaptive_enhance-resync_seek` | `no`, `yes`（播放中變更增強階層後 1.5 秒，發出一次長度為零的精確跳轉；適用於只在跳轉時才重新同步的裝置播放器所控制的 mpv） | `no` |
-| `adaptive_enhance-skip_top` | 整數 `0`, `1`, `2`, ...（永不使用階梯中最重的前 N 階；最後一階一定保留） | `0` |
-| `ytdl_adaptive-reload` | `yes`, `no`（播放中不切換解析度） | `yes` |
-| `ytdl_adaptive-fallback_clients` | 以 `+` 連接的 YouTube 客戶端名稱 | `web_embedded+tv+mweb` |
+| `adaptive_enhance-resync_seek` | `no`, `yes`（播放中換階層後 1.5 秒，發出一次長度為零的精確跳轉；給只在跳轉時重新同步的裝置播放器控制的 mpv 用） | `no` |
+| `adaptive_enhance-skip_top` | 整數 `0`, `1`, `2`, ...（階梯中最重的前 N 階不用；最後一階一定保留） | `0` |
+| `ytdl_adaptive-reload` | `yes`, `no`（播放中不換解析度） | `yes` |
+| `ytdl_adaptive-fallback_clients` | 用 `+` 串起來的 YouTube 客戶端名稱 | `web_embedded+tv+mweb` |
 
 ## 疑難排解
 
-| 狀況 | 原因 / 解決方法 |
+| 狀況 | 原因 / 解法 |
 |---|---|
-| 開啟影片約 3 秒後 mpv 自動關閉，且無錯誤訊息 | VapourSynth 資料夾尚未加入 PATH。請登出並重新登入；若問題仍存在，請重新執行安裝程式。 |
-| mpv.net 卡在 "vapoursynth initializing" | RIFE 外掛程式在 mpv.net 中會卡死。安裝程式已在該處預設停用 RIFE；若想使用 RIFE，請使用 `mpv.exe`（桌面捷徑即為此）。 |
-| 由其他程式控制的 mpv（例如 funscript／裝置播放器）和裝置不同步 | 只在那個 mpv 執行個體關掉補幀：在它的 `mpv.conf` 加上 `script-opts-append=adaptive_enhance-mv=off` 與 `script-opts-append=adaptive_enhance-rife=off`。另外加上 `script-opts-append=adaptive_enhance-resync_seek=yes`，讓每次降階後以一次跳轉重新同步。著色器不影響時間軸，可以保留。 |
-| YouTube：HTTP 403 或 "no video formats" | yt-dlp 版本過舊：執行 `winget upgrade yt-dlp.yt-dlp` 更新。 |
-| 播放檔案最初幾秒有卡頓 | 階梯機制調整時的正常現象（新類型的影片約需 15–40 秒）。 |
-| 畫面看起來跟以前一樣 | 按下 `` ` `` 檢查：在 1:1 比例且訊源清晰的情況下，幾乎沒有增強空間。可使用 `Ctrl+s` 對比。 |
-| 安裝程式："could not download mvtools.dll" | 無法連線至 Release 下載點（無網路連線、Proxy 代理伺服器問題，或儲存庫為私人狀態）。請稍後重試，或透過 [`third_party/mvtools`](third_party/mvtools) 自行編譯 DLL 並執行 `install.ps1 -MvtoolsDll <path>`。 |
-| 確認 VapourSynth 是否已正確安裝設定 | 執行 `py -3.13 -m vapoursynth check-env` 每行都應顯示 "this installation"，且執行 `py -3.13 -c "import vapoursynth as vs; print(vs.core.mv, vs.core.rife)"` 應印出兩個外掛程式。 |
-| 想還原舊的設定檔 | 備份檔位於 `%APPDATA%\mpv\backup-<date>\`。 |
-| 顯示卡驅動程式重設（螢幕黑畫面數秒） | 測試機上曾於播放 AV1 1080p180 檔案時發生過一次，後續重試 5 次皆未再現。若重複發生，請在 `mpv.conf` 中設定 `hwdec=d3d11va-copy`。（單純的 `hwdec=d3d11va` 無法搭配 `gpu-api=vulkan` 使用；mpv 會無聲無息地退回軟體解碼。） |
+| 開影片約 3 秒後 mpv 就關掉，沒有錯誤訊息 | VapourSynth 資料夾還沒進 PATH。登出再登入；若還是一樣，重跑安裝程式。 |
+| mpv.net 卡在 "vapoursynth initializing" | RIFE 外掛在 mpv.net 裡會卡死。安裝程式在 mpv.net 下預設關掉 RIFE；想用 RIFE 請改用 `mpv.exe`（桌面捷徑用的就是它）。 |
+| 由其他程式控制的 mpv（例如 funscript／裝置播放器）跟裝置不同步 | 只在那個 mpv 執行個體關掉補幀：在它的 `mpv.conf` 加上 `script-opts-append=adaptive_enhance-mv=off` 與 `script-opts-append=adaptive_enhance-rife=off`。再加 `script-opts-append=adaptive_enhance-resync_seek=yes`，讓每次降階後用一次跳轉重新同步。著色器不影響時間軸，可以留著。 |
+| YouTube：HTTP 403 或 "no video formats" | yt-dlp 太舊：執行 `winget upgrade yt-dlp.yt-dlp`。 |
+| 檔案剛開始播的幾秒會頓 | 階梯還在調整，屬正常（新類型的影片約 15–40 秒）。 |
+| 畫面看起來跟以前一樣 | 按 `` ` `` 看：1:1 比例又碰上乾淨的訊源時，本來就沒多少可加強的。用 `Ctrl+s` 對照。 |
+| 安裝程式："could not download mvtools.dll" | 連不到 Release（沒網路、有 Proxy，或儲存庫是私人狀態）。稍後再試，或照 [`third_party/mvtools`](third_party/mvtools) 自己編 DLL，再跑 `install.ps1 -MvtoolsDll <path>`。 |
+| 想確認 VapourSynth 有沒有裝好 | `py -3.13 -m vapoursynth check-env` 每行都該顯示 "this installation"，而 `py -3.13 -c "import vapoursynth as vs; print(vs.core.mv, vs.core.rife)"` 該印出兩個外掛。 |
+| 想換回原本的設定 | 備份在 `%APPDATA%\mpv\backup-<date>\`。 |
+| 顯示卡驅動重設（畫面黑掉幾秒） | 測試機上用 AV1 1080p180 檔案遇過一次，重試 5 次都沒再現。若再發生，在 `mpv.conf` 設 `hwdec=d3d11va-copy`。（單純的 `hwdec=d3d11va` 配 `gpu-api=vulkan` 不能用；mpv 會默默退回軟體解碼。） |
 
 ## 測試數據
 
-來自測試機（RX 9070 XT，2560x1440 @ 180 Hz）的數據。渲染開銷為 libplacebo 處理 1080p 訊源時每幀的顯示卡時間；畫質則是暫停單幀畫面與 4K 母帶縮小至 1440p 的參考畫面相比之 PSNR（dB），依序為 3D 渲染 / 2D 動漫 / 真人實拍：
+以下數據來自測試機（RX 9070 XT，2560x1440、180 Hz）。渲染開銷是 libplacebo 處理 1080p 訊源時每幀的 GPU 時間；畫質是暫停單幀與 4K 母帶縮到 1440p 的參考畫面相較的 PSNR（dB），依序為 3D 渲染 / 2D 動漫 / 真人實拍：
 
-| 著色器組合 | 渲染耗時 | 1080p→1440p | 720p→1440p |
+| 著色器組合 | 渲染 | 1080p→1440p | 720p→1440p |
 |---|---|---|---|
 | CfL + ArtCNN C4F16 | 4.5 ms | 32.79 / 45.63 / 46.49 | 32.31 / 42.27 / 43.85 |
 | CfL + ravu-zoom-ar-r3 | 1.8 ms | 32.71 / 46.86 / 46.64 | 32.06 / 42.07 / 44.13 |
 | KrigBilateral + CAS-scaled | 1.3 ms | 32.69 / 45.21 / 46.10 | 31.79 / 39.13 / 43.59 |
 
-**請謹慎解讀這些數據。** 每種內容類型僅取單幀，參考標準採 Lanczos 縮小（此方式偏好較柔和的縮放演算法並壓低銳化分數），且 0.1–0.3 dB 的差異屬於誤差範圍。只有較大的差距才具參考價值（例如 FSR 和 NIS 分數低了 3–8 dB 因而被捨棄；ArtCNN C4F32 則因耗時為 C4F16 的兩倍而被捨棄）。嚴謹的比較應採用多幀畫面、無損訊源以及 SSIMULACRA2 / VMAF 指標。
+**這些數字要看得很小心。** 每種內容只取一幀，參考畫面用 Lanczos 縮小（偏好柔和的縮放、壓低銳化的分數），而 0.1–0.3 dB 的差距在誤差範圍內。只有差距大的才站得住腳（FSR 與 NIS 低了 3–8 dB，所以沒採用；ArtCNN C4F32 的耗時是 C4F16 的兩倍，也沒採用）。要認真比較，得用多幀、無損訊源，再搭配 SSIMULACRA2 / VMAF。
 
-CPU 動態補幀測試（Ryzen 7 7700，180 Hz，開啟著色器），"ok" 代表滿速運行：
+CPU 動態補幀（Ryzen 7 7700、180 Hz、著色器開著），"ok" 代表滿速：
 
 | 訊源 | flow → 90 | flow → 180 | block → 90 | block → 180 |
 |---|---|---|---|---|
@@ -144,27 +151,38 @@ CPU 動態補幀測試（Ryzen 7 7700，180 Hz，開啟著色器），"ok" 代�
 | 4K30（在 1440p 補幀） | 80% | 52% | ok | 73% |
 | 4K60（在 1440p 補幀） | 34% | 35% | ok | 32% |
 
-階梯機制會自動選取在你的電腦上能滿速運行的最高階層。
+階梯會挑上面這些裡面，你的機器跑得滿速的最高一階。
 
 ## 解除安裝
 
-安裝程式會寫入以下檔案；請將它們刪除：
+安裝程式寫入的東西，請刪掉：
 
-- `%APPDATA%\mpv\mpv.conf`、`input.conf` 以及資料夾 `scripts-adaptive`、`vs`、`shaders`（若有備份，可從 `%APPDATA%\mpv\backup-<date>\` 還原你先前的設定檔）
-- 若已安裝 mpv.net，刪除 `%APPDATA%\mpv.net\` 中相同的這兩個 `.conf` 檔案
+- `%APPDATA%\mpv\mpv.conf`、`input.conf`，以及 `scripts-adaptive`、`vs`、`shaders` 三個資料夾（再把 `%APPDATA%\mpv\backup-<date>\` 裡原本的設定放回去，如果有的話）
+- 有裝 mpv.net 的話，`%APPDATA%\mpv.net\` 裡同樣那兩個 `.conf` 檔
 - `%LOCALAPPDATA%\mpv-adaptive-enhance` 與桌面的 **Play in mpv** 捷徑
-- 學習紀錄資料：`%APPDATA%\mpv\adaptive-cache.json` 與 `ytdl-adaptive.json`
+- 學到的資料：`%APPDATA%\mpv\adaptive-cache.json` 與 `ytdl-adaptive.json`
 
-若你在其他地方不需要使用這些軟體，可執行 `winget uninstall shinchiro.mpv` 移除程式（同理亦可移除 `yt-dlp.yt-dlp`、`DenoLand.Deno` 與 Python），並執行 `py -3.13 -m pip uninstall vapoursynth` 移除 VapourSynth。安裝程式可能也已將 Python 與 VapourSynth 資料夾加入你的使用者 PATH 環境變數中。
+程式用 `winget uninstall shinchiro.mpv` 移除（`yt-dlp.yt-dlp`、`DenoLand.Deno` 與 Python 同理，別處用得到就留著），VapourSynth 用 `py -3.13 -m pip uninstall vapoursynth` 移除。安裝程式可能也把 Python 與 VapourSynth 的資料夾加進了你的使用者 PATH。
+
+## 專案結構
+
+| 路徑 | 內容 |
+|---|---|
+| `install.ps1` | 安裝程式（見「安裝方式」）。 |
+| `config/` | `mpv.conf`、`input.conf`。 |
+| `scripts/` | `adaptive-enhance.lua`、`ytdl-adaptive.lua`、`tests/test_learning.lua`。 |
+| `vs/` | `mvfps.vpy`、`rife.vpy`。 |
+| `launcher/` | `play-in-mpv.ps1`，也就是 **Play in mpv** 捷徑的目標。 |
+| `third_party/mvtools/` | MVTools 建置用的修正檔與 `build-mvtools.sh`（見「授權條款」）。 |
 
 ## 授權條款
 
-本儲存庫本身的檔案（腳本、`.vpy`、設定檔、安裝程式、說明文件）採用 [MIT 授權條款](LICENSE)。下方列出的組件皆未包含在此儲存庫中；安裝程式會由各自的作者來源下載：
+本儲存庫自己的檔案（腳本、`.vpy`、設定、安裝程式、說明文件）採用 [MIT 授權條款](LICENSE)。下面列出的元件都不包含在這個儲存庫裡；安裝程式會分別向各自的作者下載：
 
 | 組件 | 作者 | 授權條款 |
 |---|---|---|
-| [mpv](https://mpv.io) (shinchiro build) | mpv 開發者 | GPL-2.0+ / LGPL-2.1+ |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | yt-dlp 貢獻者 | Unlicense |
+| [mpv](https://mpv.io) (shinchiro build) | mpv developers | GPL-2.0+ / LGPL-2.1+ |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | yt-dlp contributors | Unlicense |
 | [VapourSynth](https://github.com/vapoursynth/vapoursynth) | Fredrik Mellbin | LGPL-2.1 |
 | [vapoursynth-mvtools](https://github.com/dubhater/vapoursynth-mvtools) v29_2 | dubhater et al. | GPL-2.0 |
 | [VapourSynth-RIFE-ncnn-Vulkan](https://github.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan) r9_mod_v33 + rife-v4.6 model | HolyWu, styler00dollar; RIFE by hzwer | MIT |
@@ -175,6 +193,6 @@ CPU 動態補幀測試（Ryzen 7 7700，180 Hz，開啟著色器），"ok" 代�
 | [ArtCNN](https://github.com/Artoriuz/ArtCNN) | Artoriuz, Kacper Michajłow | MIT |
 | [ravu-zoom-ar-r3](https://github.com/bjin/mpv-prescalers) | bjin | LGPL-3.0 |
 
-**mvtools.dll** 附於此儲存庫的 Releases 發行版本中。它是透過 GitHub Actions ([`.github/workflows/mvtools.yml`](.github/workflows/mvtools.yml))，以原作者上游 v29_2 原始碼加上 [`third_party/mvtools`](third_party/mvtools) 中的兩個微小修正檔（僅修正建置問題：靜態連結與一個 mingw 編譯錯誤）編譯而成，因此與上游相同採用 GPL-2.0 授權。原作者上游提供的 Windows 二進位檔為 v24，現行版本的 VapourSynth 無法載入。若想自行編譯，請參閱 [`third_party/mvtools/build-mvtools.sh`](third_party/mvtools/build-mvtools.sh)。
+**mvtools.dll** 附在本儲存庫的 Releases 裡。它由 GitHub Actions（[`.github/workflows/mvtools.yml`](.github/workflows/mvtools.yml)）以上游 v29_2 原始碼加上 [`third_party/mvtools`](third_party/mvtools) 裡的兩個小修正檔編出來（只修建置問題：靜態連結和一個 mingw 編譯錯誤），所以跟上游一樣是 GPL-2.0。上游自己的 Windows 二進位檔是 v24，現在的 VapourSynth 載不進去。想自己編，請看 [`third_party/mvtools/build-mvtools.sh`](third_party/mvtools/build-mvtools.sh)。
 
-未使用 SVP 的 svpflow 函式庫：其授權在 Windows 上需要付費的 SVP 4 Pro 授權。
+沒有使用 SVP 的 svpflow 函式庫：它們的授權在 Windows 上要另外買 SVP 4 Pro。

@@ -1,17 +1,21 @@
+**English** · [繁體中文](README.zh-TW.md)
+
 # mpv-adaptive-enhance
 
-[繁體中文說明](README.zh-TW.md)
+An [mpv](https://mpv.io) setup for Windows that picks the best picture your GPU can actually
+sustain, **per video, while it plays**: upscaling/sharpening shaders, motion interpolation, and
+(for streams) the YouTube resolution your connection can feed.
 
-Makes [mpv](https://mpv.io) on Windows pick the best picture your GPU can actually sustain,
-**per video, while it plays**: upscaling/sharpening shaders, motion interpolation, and (for
-streams) the YouTube resolution your connection can feed. When frames start dropping it steps
-down one level and remembers that limit for that kind of video on that display.
+## At a glance
 
-Built because a fixed shader setup is always wrong for some files: a chain that is free for a
-1080p30 video can drop 50+ frames per second on a 1080p180 one, and a 4K stream over a busy
-connection just sits buffering.
+| | |
+|---|---|
+| Problem | A fixed shader setup is always wrong for some files: a chain that is free for a 1080p30 video can drop 50+ frames per second on a 1080p180 one, and a 4K stream over a busy connection just sits buffering. |
+| What I built | A ladder built per file, heaviest first: `[RIFE + shaders]` → `[MVTools interp + shaders]` → `[full shaders]` → `[light]` → `[chroma]` → `[none]`. It starts at the highest rung not already known to fail for this source and display, steps down one level when frames start dropping, and remembers that limit for that kind of video on that display. |
+| Result | 1.3–4.5 ms of GPU time per 1080p frame at 1440p, and CPU interpolation at full speed for 1080p60 → 90 fps, on the test machine. |
+| Stack | Windows 10/11, mpv (shinchiro build), Lua scripts, VapourSynth with MVTools and RIFE (Vulkan), yt-dlp, Python 3.13. |
 
-## What it does
+## How it works
 
 ```
  open a video
@@ -182,6 +186,17 @@ Remove the programs with `winget uninstall shinchiro.mpv` (likewise `yt-dlp.yt-d
 `DenoLand.Deno` and Python if you do not use them elsewhere) and VapourSynth with
 `py -3.13 -m pip uninstall vapoursynth`. The installer may also have added the Python and
 VapourSynth folders to your user PATH.
+
+## Repo layout
+
+| Path | Contents |
+|---|---|
+| `install.ps1` | Installer (see Install). |
+| `config/` | `mpv.conf`, `input.conf`. |
+| `scripts/` | `adaptive-enhance.lua`, `ytdl-adaptive.lua`, `tests/test_learning.lua`. |
+| `vs/` | `mvfps.vpy`, `rife.vpy`. |
+| `launcher/` | `play-in-mpv.ps1`, the target of the **Play in mpv** shortcut. |
+| `third_party/mvtools/` | Patches and `build-mvtools.sh` for the MVTools build (see Licences). |
 
 ## Licences
 
